@@ -1,0 +1,222 @@
+var mongoose = require('mongoose');
+// bring the compiled model named Hotel
+var Hotel = mongoose.model('Hotel');
+
+
+var runGeoQuery = function(req, res){
+    var lat = parseFloat(req.query.lat);
+    var long = parseFloat(req.query.long);
+    if (isNaN(lat) || isNaN(long)){
+        res.status(400).json({
+            "message": "If supply lat and long in queryString they should be numbers"
+        });
+        return;
+    }
+    // a geoJSON point
+    var point = {
+        type : "Point",
+        coordinates : [long, lat]
+    };
+    Hotel.aggregate([
+        {
+            $geoNear:{      
+                near : point,
+                distanceField: "dist.calculated",
+                spherical : true,   // surface
+                maxDistance : 2000, // unit meters
+                num : 5,
+            }
+        }
+    ],function(err, results){
+        if (err){
+            console.log("Error finding hotels");
+            res.status(500).json(err);
+        }
+        else{
+            console.log('Geo results', results);
+            res.status(200).json(results);
+        }
+    });
+};
+
+// localhost:3000/api/hotels
+// queryString: offset=&count= lat=&long=
+module.exports.hotelsGetAll = function(req, res){
+    console.log('requested by user:'+req.user);
+    var offset = 0;
+    var count = 20;
+    var maxCount = 20;
+    if (req.query && req.query.lat && req.query.long){
+        runGeoQuery(req, res);
+        return;
+    }
+
+    if (req.query && req.query.offset){
+        // the query value comes as a string
+        offset = parseInt(req.query.offset, 10);
+    }
+    if (req.query && req.query.count){
+        count = parseInt(req.query.count);
+    }
+
+    if (isNaN(offset) || isNaN(count)){
+        res.status(400).json({
+            "message": "If supply count and offset in queryString they should be integer"
+        });
+        return;
+    }
+    if (count>maxCount){
+        res.status(400).json({
+            "message": "Count limit of "+maxCount+" exceeded"
+        });
+        return;
+    }
+    Hotel
+      .find()
+      .skip(offset)
+      .limit(count)
+      .exec(function(err, hotels){
+          if (err){
+            console.log("Error finding hotels");
+            res.status(500).json(err);
+          }
+          else{
+            console.log("Found hotels", hotels.length);
+            res.status(200).json(hotels);
+          }
+      });
+};
+
+// URL param are in the request object
+// localhost:3000/api/hotels/5d1a76afc9a081a5772ac88f
+module.exports.hotelsGetOne = function(req, res){
+    var hotelId = req.params.hotelId;
+    console.log("GET the hotel :", hotelId);
+    Hotel
+      .findById(hotelId)
+      .exec(function(err, doc){
+        var response = {
+            status: 200,
+            message: doc
+        };
+        if (err){
+            console.log("Error finding hotels");
+            response.status = 500;
+            response.message = err;
+        }
+        else if (!doc){
+            response.status = 404;
+            response.message = {"message":"Hotel ID not found"};
+        }
+        res
+          .status(response.status)
+          .json(response.message);
+    });
+};
+
+var _splitArray = function(input){
+    var output;
+    if (input && input.length>0){
+        output = input.split(";");
+    }
+    else{
+        output = [];
+    }
+    return output;
+};
+
+// the POST form is in the request.body object
+module.exports.hotelsAddOne = function(req, res){
+    Hotel
+      .create({
+        name : req.body.name,
+        description : req.body.description,
+        stars : parseInt(req.body.stars,10),
+        services : _splitArray(req.body.services),
+        photos : _splitArray(req.body.photos),
+        currency : req.body.currency,
+        location : {
+          address : req.body.address,
+          coordinates : [parseFloat(req.body.lng), parseFloat(req.body.lat)]
+        }
+      },function(err, hotel){
+          if (err){
+            console.log("Error creating hotel");
+            res.status(400).json(err);
+          }
+          else{
+            console.log("Hotel created \n",hotel);
+            res.status(201).json(hotel);
+          }
+      });
+};
+
+// localhost:3000/api/hotels/5d1a76afc9a081a5772ac88f
+module.exports.hotelsUpdateOne = function(req, res){
+    var hotelId = req.params.hotelId;
+    Hotel
+      .findById(hotelId)
+      // select out subdocument (reviews, room), because we want to update only parent document.
+      .select("-reviews -rooms")
+      .exec(function(err, doc){
+        var response = {
+            status: 200,
+            message: doc
+        };
+        if (err){
+            console.log("Error finding hotels");
+            response.status = 500;
+            response.message = err;
+        }
+        else if (!doc){
+            response.status = 404;
+            response.message = {"message":"Hotel ID not found"};
+        }
+        if (response.status !== 200){
+            // if problem.
+            res
+            .status(response.status)
+            .json(response.message);
+        }
+        else{
+            // update document (not subdocument)
+            doc.name = req.body.name;
+            doc.description = req.body.description;
+            doc.stars = parseInt(req.body.stars,10);
+            doc.services = _splitArray(req.body.services);
+            doc.photos = _splitArray(req.body.photos);
+            doc.currency = req.body.currency;
+            doc.location = {
+              address : req.body.address,
+              coordinates : [parseFloat(req.body.lng), parseFloat(req.body.lat)]
+            };
+            // save updated document
+            doc.save(function(err, updatedDoc){
+                if (err){
+                    res.status(500).json(err);
+                }  
+                else{
+                    // updateDoc is empty so don't return it
+                    res.status(204)
+                       .json();   
+                }         
+            });
+        }
+    });
+
+};
+
+
+module.exports.hotelsDeleteOne = function(req, res){
+    var hotelId = req.params.hotelId;
+    Hotel.findByIdAndRemove(hotelId)
+         .exec(function(err, hotel){
+            if (err){
+                res.status(404).json(err);
+             }
+             else{
+                 console.log("hotel is deleted", hotelId);
+                 res.status(204).json();
+             }
+         });
+}
